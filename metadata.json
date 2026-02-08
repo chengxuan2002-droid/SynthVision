@@ -1,0 +1,5 @@
+{
+  "name": "SynthVision Data Forge",
+  "description": "A professional synthetic data generation platform for Computer Vision. Upload reference images, define scenarios, and generate diverse, long-tail training datasets using Visual LLMs.",
+  "requestFramePermissions": []
+}
