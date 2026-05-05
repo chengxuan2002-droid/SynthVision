@@ -1,10 +1,10 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 import { ModelConfig, ModelType } from "../types";
 
 // --- Gemini Implementation ---
 
 const getGeminiClient = () => {
-  const apiKey = process.env.API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("Google GenAI API Key not found in environment.");
   return new GoogleGenAI({ apiKey });
 };
@@ -25,8 +25,8 @@ export const generateDiversePrompts = async (
   try {
     const ai = getGeminiClient();
     
-    // Use Flash for prompt expansion
-    const model = "gemini-3-flash-latest"; 
+    // Use recommended text model
+    const model = "gemini-3-flash-preview"; 
     
     const systemInstruction = `You are a professional synthetic data engineer specializing in Computer Vision training sets. 
     Your task is to generate ${count} diverse prompt variations based on the user's requirement.
@@ -44,7 +44,7 @@ export const generateDiversePrompts = async (
     3. **Domain Randomization (The ONLY allowed variables)**:
        - ONLY vary the environment, lighting, weather, and camera-related artifacts.
        - Environment: e.g., railway bridge, railway tunnel, high-speed rail line, maintenance depot, station.
-       - Lighting: e.g., harsh midday sun, dim twilight, fluorescent maintenance lights, cinematic backlighting, sunrise.
+       - Lighting: e.g., harsh midday sun, dim twilight, streetlights beside the railway, backlighting, sunrise.
        - Weather: e.g., heavy rain, drizzle, foggy, clear sky, snowing, overcast, dusty.
        - Camera Artifacts: e.g., clean lens, motion blur, lens smudges, mud splatters, water droplets, surveillance grain.
 
@@ -71,6 +71,7 @@ export const generateDiversePrompts = async (
       config: {
         systemInstruction,
         responseMimeType: "application/json",
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         responseSchema: {
           type: Type.OBJECT,
           properties: {
@@ -114,16 +115,18 @@ export const generateImageWithGemini = async (
   onImageFound: (base64: string) => void
 ): Promise<void> => {
   const ai = getGeminiClient();
-  const model = "Nano Banana Pro"; 
+  const model = "gemini-3-pro-image-preview"; 
 
   const parts: any[] = [];
   
   // Add reference images
   referenceImagesBase64.forEach(base64 => {
+    const mimeMatch = base64.match(/^data:([^;]+);base64,/);
+    const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
     const cleanBase64 = base64.split(',')[1] || base64;
     parts.push({
       inlineData: {
-        mimeType: 'image/png', 
+        mimeType, 
         data: cleanBase64
       }
     });

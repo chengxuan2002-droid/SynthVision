@@ -62,6 +62,11 @@ const ImageEditorModal: React.FC<ImageEditorModalProps> = ({ image, onClose, onS
     img.crossOrigin = "anonymous";
     img.src = image.url;
     
+    img.onerror = () => {
+      console.error("Failed to load image for canvas processing.");
+      alert("Error loading image for editing. Please check your connection.");
+    };
+
     img.onload = () => {
       // 1. Calculate Crop Dimensions
       const width = img.width;
@@ -125,15 +130,17 @@ const ImageEditorModal: React.FC<ImageEditorModalProps> = ({ image, onClose, onS
           <div className="flex-1 bg-black/50 p-6 flex items-center justify-center relative overflow-hidden">
             <div className="relative shadow-2xl border border-slate-800" style={{ maxWidth: '100%', maxHeight: '100%' }}>
                {/* This image is for visual preview only, styling matches canvas logic roughly */}
-               <img 
-                 src={previewUrl} 
-                 alt="preview" 
-                 className="max-h-full max-w-full object-contain"
-                 style={{
-                   filter: `brightness(${brightness}%) contrast(${contrast}%) ${filter !== 'none' ? filter : ''}`,
-                   clipPath: `inset(${crop.top}% ${crop.right}% ${crop.bottom}% ${crop.left}%)`
-                 }}
-               />
+               {previewUrl && (
+                 <img 
+                   src={previewUrl} 
+                   alt="preview" 
+                   className="max-h-full max-w-full object-contain"
+                   style={{
+                     filter: `brightness(${brightness}%) contrast(${contrast}%) ${filter !== 'none' ? filter : ''}`,
+                     clipPath: `inset(${crop.top}% ${crop.right}% ${crop.bottom}% ${crop.left}%)`
+                   }}
+                 />
+               )}
             </div>
             {/* Hidden Canvas for processing */}
             <canvas ref={canvasRef} className="hidden" />

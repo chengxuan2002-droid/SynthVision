@@ -185,45 +185,72 @@ const App: React.FC = () => {
       addLog(sessionId, `Target Aspect Ratio: ${aspectRatio}`);
 
       let completedCount = 0;
-      for (let i = 0; i < diversePrompts.length; i++) {
+      const CONCURRENCY = 3;
+      const tasks = diversePrompts.map((prompt, i) => ({ prompt, index: i }));
+      
+      // Using a sliding window / pool pattern for optimal throughput
+      const queue = [...tasks];
+      const activeTasks: Promise<void>[] = [];
+      
+      while (queue.length > 0 || activeTasks.length > 0) {
         if (abortControllerRef.current) break;
 
-        const prompt = diversePrompts[i];
-        addLog(sessionId, `Generating image ${i + 1}/${diversePrompts.length}...`);
-        
-        try {
-          const handleImageResult = (base64OrUrl: string) => {
-            const newImage: GeneratedImage = {
-              id: `${sessionId}_${Date.now()}_${i}`,
-              url: base64OrUrl,
-              prompt: prompt,
-              timestamp: Date.now(),
-              tags: []
-            };
-            
-            setSessions(prev => {
-                const current = prev.find(s => s.id === sessionId);
-                if(!current) return prev;
-                const updatedImages = [...current.generatedImages, newImage];
-                const newProgress = 15 + Math.floor((updatedImages.length / current.totalTarget) * 85);
-                return prev.map(s => s.id === sessionId ? {
-                    ...s,
-                    generatedImages: updatedImages,
-                    progress: newProgress
-                } : s);
-            });
-          };
+        // Fill pool to concurrency limit
+        while (activeTasks.length < CONCURRENCY && queue.length > 0) {
+          const task = queue.shift()!;
+          const taskPromise = (async () => {
+             const { prompt, index } = task;
+             addLog(sessionId, `[Parallel Worker] Starting generation for Sample ${index + 1}/${diversePrompts.length}...`);
+             
+             try {
+                const handleImageResult = (base64OrUrl: string) => {
+                  const newImage: GeneratedImage = {
+                    id: `${sessionId}_${Date.now()}_${index}`,
+                    url: base64OrUrl,
+                    prompt: prompt,
+                    timestamp: Date.now(),
+                    tags: []
+                  };
+                  
+                  setSessions(prev => {
+                      const current = prev.find(s => s.id === sessionId);
+                      if(!current) return prev;
+                      const updatedImages = [...current.generatedImages, newImage];
+                      const newProgress = 15 + Math.floor((updatedImages.length / current.totalTarget) * 85);
+                      return prev.map(s => s.id === sessionId ? {
+                          ...s,
+                          generatedImages: updatedImages,
+                          progress: newProgress
+                      } : s);
+                  });
+                };
 
-          if (activeModel.type === ModelType.GEMINI) {
-            await generateImageWithGemini(prompt, session.referenceImages, aspectRatio, handleImageResult);
-          } else {
-            await generateImageCustom(activeModel, prompt, aspectRatio, handleImageResult);
-          }
-        } catch (err: any) {
-          console.error("Generation Loop Error:", err);
-          addLog(sessionId, `Error generating image ${i + 1}: ${err.message}`);
+                if (activeModel.type === ModelType.GEMINI) {
+                  await generateImageWithGemini(prompt, session.referenceImages, aspectRatio, handleImageResult);
+                } else {
+                  await generateImageCustom(activeModel, prompt, aspectRatio, handleImageResult);
+                }
+                addLog(sessionId, `✅ Sample ${index + 1} generated successfully.`);
+             } catch (err: any) {
+                console.error(`Worker error for task ${index + 1}:`, err);
+                addLog(sessionId, `❌ Error in Sample ${index + 1}: ${err.message}`);
+             } finally {
+                completedCount++;
+             }
+          })();
+          
+          activeTasks.push(taskPromise);
+          // Remove from active tasks once finished
+          taskPromise.then(() => {
+            const idx = activeTasks.indexOf(taskPromise);
+            if (idx > -1) activeTasks.splice(idx, 1);
+          });
         }
-        completedCount++;
+
+        // Wait for at least one task to finish before attempting to pull next or exit
+        if (activeTasks.length > 0) {
+          await Promise.race(activeTasks);
+        }
       }
 
       if (!abortControllerRef.current) {
@@ -307,54 +334,86 @@ const App: React.FC = () => {
   const downloadVisible = async () => {
     if (!activeSession || filteredImages.length === 0) return;
     
-    addLog(activeSession.id, `Preparing export for ${filteredImages.length} samples...`);
+    addLog(activeSession.id, `🚀 Initializing batch export for ${filteredImages.length} verified samples...`);
     
     try {
       const zip = new JSZip();
       const folder = zip.folder(`synth_data_${activeSession.id}`);
       
+      let processedCount = 0;
+      let errorCount = 0;
+
       const downloadTasks = filteredImages.map(async (img, idx) => {
-        let base64Data = '';
+        const fileName = `sample_${idx + 1}_${Date.now() % 1000}.png`;
         
-        if (img.url.startsWith('data:')) {
-          base64Data = img.url.split(',')[1];
-        } else {
-          // Fallback for remote URLs if any
-          try {
-            const resp = await fetch(img.url);
-            const blob = await resp.blob();
-            folder?.file(`sample_${idx + 1}.png`, blob);
-            return;
-          } catch (e) {
-            console.error("Failed to fetch remote image", e);
+        try {
+          if (!img.url) {
+            console.warn(`Empty URL for image ${idx + 1}`);
+            errorCount++;
             return;
           }
-        }
-        
-        if (base64Data) {
-          folder?.file(`sample_${idx + 1}.png`, base64Data, { base64: true });
+
+          if (img.url.startsWith('data:')) {
+            const parts = img.url.split(',');
+            if (parts.length < 2) {
+                console.error(`Invalid data URL format for image ${idx + 1}`);
+                errorCount++;
+                return;
+            }
+            const base64Data = parts[1];
+            folder?.file(fileName, base64Data, { base64: true });
+            processedCount++;
+          } else {
+            const resp = await fetch(img.url, { mode: 'cors' });
+            if (!resp.ok) throw new Error(`HTTP error! status: ${resp.status}`);
+            const blob = await resp.blob();
+            folder?.file(fileName, blob);
+            processedCount++;
+          }
+        } catch (e) {
+          console.error(`Failed to process image ${idx + 1}:`, e);
+          addLog(activeSession.id, `⚠️ Error fetching sample ${idx + 1}. It will be missing from export.`);
+          errorCount++;
         }
       });
 
       await Promise.all(downloadTasks);
       
-      const content = await zip.generateAsync({ type: 'blob' });
-      saveAs(content, `synthvision_export_${activeSession.id}.zip`);
+      if (processedCount === 0) {
+        throw new Error("No images were successfully processed for zipping.");
+      }
+
+      addLog(activeSession.id, `📦 Finalizing archive (${processedCount} files, ${errorCount} errors)...`);
       
-      addLog(activeSession.id, `Successfully exported ${filteredImages.length} images as ZIP.`);
-    } catch (error: any) {
-      console.error("Export Error:", error);
-      addLog(activeSession.id, `Error during export: ${error.message}`);
-      
-      // Fallback to old method if ZIP fails for some reason
-      filteredImages.forEach((img, idx) => {
-        const link = document.createElement('a');
-        link.href = img.url;
-        link.download = `synth_${activeSession.id}_${idx}.png`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+      const content = await zip.generateAsync({ 
+        type: 'blob',
+        compression: "DEFLATE",
+        compressionOptions: { level: 6 }
       });
+      
+      saveAs(content, `synthvision_export_${activeSession.id}.zip`);
+      addLog(activeSession.id, `✅ Export complete. Processed: ${processedCount}, Fails: ${errorCount}`);
+      
+    } catch (error: any) {
+      console.error("Export System Failure:", error);
+      addLog(activeSession.id, `❌ Export pipeline failed: ${error.message}`);
+      
+      // Secondary fallback (one-by-one download) but with safety delay or user warning
+      if (confirm(`ZIP export failed. Would you like to attempt manual one-by-one sequential download for ${filteredImages.length} images? Warning: Browser may block multiple downloads.`)) {
+          let count = 0;
+          for(const img of filteredImages) {
+              if (!img.url) continue;
+              const link = document.createElement('a');
+              link.href = img.url;
+              link.download = `synth_${activeSession.id}_${count}.png`;
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+              count++;
+              // Small delay to help browsers handle it
+              await new Promise(r => setTimeout(r, 200));
+          }
+      }
     }
   };
 
@@ -448,7 +507,7 @@ const App: React.FC = () => {
                     >
                         {refImages.map((img, idx) => (
                         <div key={idx} className="aspect-square rounded-xl border border-slate-700 overflow-hidden relative group bg-slate-800 animate-in zoom-in-75 duration-300 shadow-xl ring-1 ring-white/5">
-                            <img src={img} alt="ref" className="w-full h-full object-cover transition-transform group-hover:scale-110" />
+                            {img && <img src={img} alt="ref" className="w-full h-full object-cover transition-transform group-hover:scale-110" />}
                             <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                                <button 
                                   onClick={() => setRefImages(prev => prev.filter((_, i) => i !== idx))}
@@ -564,12 +623,17 @@ const App: React.FC = () => {
                         </div>
 
                          <div className="bg-black/40 rounded-2xl p-5 font-mono text-[10px] text-slate-400 h-32 overflow-y-auto border border-slate-800 shadow-inner custom-scrollbar">
-                            {activeSession.logs.map((log, i) => (
+                            {activeSession.logs.map((log, i) => {
+                                const splitIdx = log.indexOf(']');
+                                const time = log.substring(0, splitIdx + 1);
+                                const msg = log.substring(splitIdx + 1);
+                                return (
                                 <div key={i} className="mb-1.5 leading-relaxed flex gap-3 opacity-60 hover:opacity-100 transition-opacity">
-                                  <span className="text-slate-600 shrink-0">{log.split(']')[0]}]</span>
-                                  <span className="text-slate-300">{log.split(']')[1]}</span>
+                                  <span className="text-slate-600 shrink-0">{time}</span>
+                                  <span className="text-slate-300">{msg}</span>
                                 </div>
-                            ))}
+                                );
+                            })}
                         </div>
                     </div>
 
@@ -616,7 +680,7 @@ const App: React.FC = () => {
                                 onClick={() => setEditingImage(img)}
                                 className="group relative aspect-square bg-slate-900 rounded-2xl border border-slate-800/80 overflow-hidden hover:border-primary-500/50 transition-all duration-500 cursor-pointer flex items-center justify-center hover:shadow-2xl hover:shadow-primary-500/10 active:scale-[0.98] shadow-lg ring-1 ring-white/5"
                             >
-                                <img src={img.url} alt="gen" className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
+                                {img.url && <img src={img.url} alt="gen" className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />}
                                 {img.tags.length > 0 && (
                                 <div className="absolute top-3 left-3 flex gap-1.5 flex-wrap max-w-[calc(100%-24px)] z-10">
                                     {img.tags.slice(0, 2).map(tag => (
