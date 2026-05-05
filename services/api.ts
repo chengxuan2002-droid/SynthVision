@@ -26,7 +26,7 @@ export const generateDiversePrompts = async (
     const ai = getGeminiClient();
     
     // Use Flash for prompt expansion
-    const model = "gemini-3-flash-preview"; 
+    const model = "gemini-3-flash-latest"; 
     
     const systemInstruction = `You are a professional synthetic data engineer specializing in Computer Vision training sets. 
     Your task is to generate ${count} diverse prompt variations based on the user's requirement.
@@ -114,7 +114,7 @@ export const generateImageWithGemini = async (
   onImageFound: (base64: string) => void
 ): Promise<void> => {
   const ai = getGeminiClient();
-  const model = "gemini-3-pro-image-preview"; 
+  const model = "Nano Banana Pro"; 
 
   const parts: any[] = [];
   

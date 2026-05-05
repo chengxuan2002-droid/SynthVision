@@ -4,6 +4,8 @@ import SettingsModal from './components/SettingsModal';
 import ImageEditorModal from './components/ImageEditorModal';
 import { Session, GeneratedImage, ModelConfig, ModelType } from './types';
 import { generateDiversePrompts, generateImageWithGemini, generateImageCustom } from './services/api';
+import JSZip from 'jszip';
+import { saveAs } from 'file-saver';
 
 // Declare window interface for AI Studio
 declare global {
@@ -302,16 +304,58 @@ const App: React.FC = () => {
     ? Array.from(new Set(activeSession.generatedImages.flatMap(img => img.tags))) 
     : [];
 
-  const downloadVisible = () => {
-    if (!activeSession) return;
-    filteredImages.forEach((img, idx) => {
-      const link = document.createElement('a');
-      link.href = img.url;
-      link.download = `synth_${activeSession.id}_${idx}_${activeFilterTag || 'all'}.png`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    });
+  const downloadVisible = async () => {
+    if (!activeSession || filteredImages.length === 0) return;
+    
+    addLog(activeSession.id, `Preparing export for ${filteredImages.length} samples...`);
+    
+    try {
+      const zip = new JSZip();
+      const folder = zip.folder(`synth_data_${activeSession.id}`);
+      
+      const downloadTasks = filteredImages.map(async (img, idx) => {
+        let base64Data = '';
+        
+        if (img.url.startsWith('data:')) {
+          base64Data = img.url.split(',')[1];
+        } else {
+          // Fallback for remote URLs if any
+          try {
+            const resp = await fetch(img.url);
+            const blob = await resp.blob();
+            folder?.file(`sample_${idx + 1}.png`, blob);
+            return;
+          } catch (e) {
+            console.error("Failed to fetch remote image", e);
+            return;
+          }
+        }
+        
+        if (base64Data) {
+          folder?.file(`sample_${idx + 1}.png`, base64Data, { base64: true });
+        }
+      });
+
+      await Promise.all(downloadTasks);
+      
+      const content = await zip.generateAsync({ type: 'blob' });
+      saveAs(content, `synthvision_export_${activeSession.id}.zip`);
+      
+      addLog(activeSession.id, `Successfully exported ${filteredImages.length} images as ZIP.`);
+    } catch (error: any) {
+      console.error("Export Error:", error);
+      addLog(activeSession.id, `Error during export: ${error.message}`);
+      
+      // Fallback to old method if ZIP fails for some reason
+      filteredImages.forEach((img, idx) => {
+        const link = document.createElement('a');
+        link.href = img.url;
+        link.download = `synth_${activeSession.id}_${idx}.png`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      });
+    }
   };
 
   if (isCheckingKey) {
